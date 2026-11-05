@@ -47,6 +47,26 @@
       scrollbar-width: none;
     }
   </style>
+  <!-- Firebase SDK (Compat) -->
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-storage-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-analytics-compat.js"></script>
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyDXlW82kHhBsyKMParaEyRvogBVpAn2lCc",
+      authDomain: "reviews-52c6a.firebaseapp.com",
+      projectId: "reviews-52c6a",
+      storageBucket: "reviews-52c6a.firebasestorage.app",
+      messagingSenderId: "169743344143",
+      appId: "1:169743344143:web:82a756006ada9be3c5f97a",
+      measurementId: "G-F57F1NS1G2"
+    };
+    const firebaseApp = firebase.initializeApp(firebaseConfig);
+    try { firebase.analytics(); } catch (e) {}
+    window.db = firebase.firestore();
+    window.storage = firebase.storage();
+  </script>
 </head>
 <body class="min-h-screen py-0 md:py-6 flex justify-center items-center">
 
@@ -278,7 +298,9 @@
   <script>
     let selectedRating = 5;
     let pendingReviews = [];
-    let currentVideoUrl = null;
+    let approvedReviews = [];
+    let currentVideoFile = null;
+    const ADMIN_EMAIL = 'harshitap649@gmail.com';
 
     // TAB SWITCHING
     function switchTab(tabName) {
@@ -321,7 +343,7 @@
       }
       const email = prompt('Enter admin email to access the Moderation Portal:');
       if (email === null) return;
-      if (email.trim().toLowerCase() === 'harshitap649@gmail.com') {
+      if (email.trim().toLowerCase() === ADMIN_EMAIL) {
         sessionStorage.setItem('patidarAdminAuth', 'true');
         const adminBtn = document.getElementById('tab-btn-admin');
         if (adminBtn) adminBtn.classList.remove('hidden');
@@ -354,7 +376,7 @@
     function handleVideoFile(e) {
       const file = e.target.files[0];
       if (file) {
-        currentVideoUrl = URL.createObjectURL(file);
+        currentVideoFile = file;
         const nameEl = document.getElementById('video-preview-name');
         nameEl.innerText = "✓ Attached: " + file.name;
         nameEl.classList.remove('hidden');
@@ -362,26 +384,41 @@
     }
 
     // SUBMIT REVIEW FOR MODERATION
-    function submitReview(e) {
+    async function submitReview(e) {
       e.preventDefault();
-      const name = document.getElementById('rev-name').value;
-      const comment = document.getElementById('rev-comment').value;
+      const name = document.getElementById('rev-name').value.trim();
+      const comment = document.getElementById('rev-comment').value.trim();
+      const submitBtn = e.target.querySelector('button[type="submit"]');
+      submitBtn.disabled = true;
 
-      const reviewObj = {
-        id: Date.now(),
-        name: name,
-        rating: selectedRating,
-        comment: comment,
-        videoUrl: currentVideoUrl
-      };
+      try {
+        let videoUrl = null;
+        if (currentVideoFile) {
+          const fileRef = storage.ref().child(`review-videos/${Date.now()}_${currentVideoFile.name}`);
+          await fileRef.put(currentVideoFile);
+          videoUrl = await fileRef.getDownloadURL();
+        }
 
-      pendingReviews.push(reviewObj);
-      closeReviewModal();
-      document.getElementById('user-review-form').reset();
-      document.getElementById('video-preview-name').classList.add('hidden');
-      currentVideoUrl = null;
+        await db.collection('reviews').add({
+          name,
+          rating: selectedRating,
+          comment,
+          videoUrl,
+          status: 'pending',
+          createdAt: firebase.firestore.FieldValue.serverTimestamp()
+        });
 
-      alert('Thank you! Your review was submitted and sent to showroom admin for moderation before auto-publishing.');
+        closeReviewModal();
+        document.getElementById('user-review-form').reset();
+        document.getElementById('video-preview-name').classList.add('hidden');
+        currentVideoFile = null;
+        alert('Thank you! Your review was submitted and sent to showroom admin for moderation before publishing.');
+      } catch (err) {
+        console.error(err);
+        alert('Failed to submit review. Please try again.');
+      } finally {
+        submitBtn.disabled = false;
+      }
     }
 
     // RENDER ADMIN APPROVAL QUEUE
@@ -409,10 +446,10 @@
             <video src="${item.videoUrl}" controls class="w-full h-36 object-cover rounded-xl mt-1"></video>
           ` : ''}
           <div class="flex gap-2 pt-1">
-            <button onclick="approveReview(${item.id})" class="flex-1 bg-emerald-600 text-white font-bold text-xs py-1.5 rounded-lg shadow-sm hover:bg-emerald-500">
+            <button onclick="approveReview('${item.id}')" class="flex-1 bg-emerald-600 text-white font-bold text-xs py-1.5 rounded-lg shadow-sm hover:bg-emerald-500">
               <i class="fa-solid fa-check mr-1"></i> Approve & Publish
             </button>
-            <button onclick="rejectReview(${item.id})" class="bg-rose-100 text-rose-700 font-bold text-xs px-3 py-1.5 rounded-lg hover:bg-rose-200">
+            <button onclick="rejectReview('${item.id}')" class="bg-rose-100 text-rose-700 font-bold text-xs px-3 py-1.5 rounded-lg hover:bg-rose-200">
               Reject
             </button>
           </div>
@@ -421,51 +458,28 @@
     }
 
     function approveReview(id) {
-      const item = pendingReviews.find(r => r.id === id);
-      if (!item) return;
-
-      const newReviewHtml = `
-        <div class="bg-slate-50 border border-slate-200/80 rounded-2xl p-3.5 space-y-2">
-          <div class="flex items-center justify-between">
-            <div class="flex items-center gap-2">
-              <div class="w-8 h-8 rounded-full bg-amber-100 text-amber-800 font-bold text-xs flex items-center justify-center">${item.name.charAt(0).toUpperCase()}</div>
-              <div>
-                <h4 class="text-xs font-bold text-slate-900">${item.name}</h4>
-                <p class="text-[9px] text-slate-400">Verified Customer • Just now</p>
-              </div>
-            </div>
-            <div class="flex text-amber-400 text-[10px]">
-              ${Array(item.rating).fill('<i class="fa-solid fa-star"></i>').join('')}
-            </div>
-          </div>
-          <p class="text-xs text-slate-600 italic">"${item.comment}"</p>
-          ${item.videoUrl ? `
-            <video src="${item.videoUrl}" controls class="w-full h-40 object-cover rounded-xl mt-1"></video>
-          ` : ''}
-        </div>
-      `;
-
-      document.getElementById('reviews-container').insertAdjacentHTML('afterbegin', newReviewHtml);
-       const placeholder = document.getElementById('reviews-empty-placeholder');
-       if (placeholder) placeholder.remove();
-
-      pendingReviews = pendingReviews.filter(r => r.id !== id);
-      renderAdminQueue();
-      alert('Review approved and published to live public feed!');
+      db.collection('reviews').doc(id).update({ status: 'approved' })
+        .then(() => alert('Review approved and published to live public feed!'))
+        .catch(err => { console.error(err); alert('Failed to approve review.'); });
     }
 
     function rejectReview(id) {
-      pendingReviews = pendingReviews.filter(r => r.id !== id);
-      renderAdminQueue();
+      db.collection('reviews').doc(id).delete()
+        .catch(err => { console.error(err); alert('Failed to reject review.'); });
     }
 
     // SUBMIT 12-HOUR QUERY TO WHATSAPP
     function submitQuery(e) {
       e.preventDefault();
-      const name = document.getElementById('q-name').value;
-      const phone = document.getElementById('q-phone').value;
+      const name = document.getElementById('q-name').value.trim();
+      const phone = document.getElementById('q-phone').value.trim();
       const category = document.getElementById('q-category').value;
-      const msg = document.getElementById('q-msg').value;
+      const msg = document.getElementById('q-msg').value.trim();
+
+      db.collection('queries').add({
+        name, phone, category, message: msg,
+        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+      }).catch(err => console.error(err));
 
       const messageText = `*New Showroom Inquiry*%0A%0A*Name:* ${encodeURIComponent(name)}%0A*Phone:* ${encodeURIComponent(phone)}%0A*Category:* ${encodeURIComponent(category)}%0A*Query:* ${encodeURIComponent(msg)}`;
 
@@ -473,6 +487,53 @@
       document.getElementById('query-form').reset();
       alert('Query submitted! You will receive a response within 12 hours.');
     }
+    // RENDER PUBLIC REVIEWS FROM FIRESTORE
+    function renderPublicReviews(approved) {
+      const container = document.getElementById('reviews-container');
+      if (!approved || approved.length === 0) {
+        container.innerHTML = `<div id="reviews-empty-placeholder" class="text-center py-8 text-xs text-slate-400 border border-dashed border-slate-200 rounded-2xl">No reviews submitted yet — be the first to drop a review!</div>`;
+        updateRatingSummary([]);
+        return;
+      }
+      container.innerHTML = approved.map(item => `
+        <div class="bg-slate-50 border border-slate-200/80 rounded-2xl p-3.5 space-y-2">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <div class="w-8 h-8 rounded-full bg-amber-100 text-amber-800 font-bold text-xs flex items-center justify-center">${(item.name || '?').charAt(0).toUpperCase()}</div>
+              <div>
+                <h4 class="text-xs font-bold text-slate-900">${item.name}</h4>
+                <p class="text-[9px] text-slate-400">Verified Customer</p>
+              </div>
+            </div>
+            <div class="flex text-amber-400 text-[10px]">
+              ${Array(item.rating || 0).fill('<i class="fa-solid fa-star"></i>').join('')}
+            </div>
+          </div>
+          <p class="text-xs text-slate-600 italic">"${item.comment}"</p>
+          ${item.videoUrl ? `<video src="${item.videoUrl}" controls class="w-full h-40 object-cover rounded-xl mt-1"></video>` : ''}
+        </div>
+      `).join('');
+      updateRatingSummary(approved);
+    }
+
+    function updateRatingSummary(approved) {
+      const avg = approved.length ? (approved.reduce((s, r) => s + (r.rating || 0), 0) / approved.length).toFixed(1) : '0.0';
+      const countText = approved.length ? `(${approved.length} review${approved.length > 1 ? 's' : ''})` : '(No reviews yet)';
+      const ratingLine = document.querySelector('#tab-content-reviews > div:first-child > div:last-child > div');
+      if (ratingLine) {
+        ratingLine.innerHTML = `<i class="fa-solid fa-star text-amber-400"></i> ${avg} / 5.0 <span class="text-slate-400 font-normal">${countText}</span>`;
+      }
+    }
+
+    // REAL-TIME LISTENER FOR REVIEWS
+    db.collection('reviews').orderBy('createdAt', 'desc').onSnapshot(snap => {
+      const all = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+      pendingReviews = all.filter(r => r.status === 'pending');
+      approvedReviews = all.filter(r => r.status === 'approved');
+      renderPublicReviews(approvedReviews);
+      renderAdminQueue();
+    });
+
 // INITIALIZE ADMIN VISIBILITY (hidden from general visitors unless authorized)
     (function initAdminVisibility() {
       if (sessionStorage.getItem('patidarAdminAuth') === 'true') {
